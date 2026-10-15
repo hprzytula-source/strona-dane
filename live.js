@@ -141,22 +141,39 @@
     } else depth = 0;
     if (lastFocus && lastFocus.focus) try { lastFocus.focus({ preventScroll: true }); } catch (e) {}
   }
-  function headerOffset() {
+  function headerOffset(y) {
     var hd = d.querySelector(".dr-hd--fixed");
     if (!hd) return 0;
-    /* po przewinięciu na komputerze górny pas nagłówka chowa się (74 px), widać tylko pasek menu */
-    return Math.max(0, hd.offsetHeight - (w.innerWidth >= 960 ? 74 : 0)) + 12;
+    /* poniżej górnej części strony nagłówek na komputerze zwija się (górny pas 74 px znika) */
+    var collapsed = w.innerWidth >= 960 && y > 100;
+    return Math.max(0, hd.offsetHeight - (collapsed ? 74 : 0)) + 12;
   }
+  function wanted(t) {
+    var top = t.getBoundingClientRect().top + (w.pageYOffset || d.documentElement.scrollTop);
+    return Math.max(0, Math.round(top - headerOffset(top)));
+  }
+  var settleT = [], userMoved = false;
+  function stopSettle() { userMoved = true; settleT.forEach(clearTimeout); settleT = []; }
+  ["wheel", "touchstart", "keydown", "mousedown"].forEach(function (ev) { w.addEventListener(ev, stopSettle, { passive: true }); });
   function scrollToEl(t) {
+    stopSettle(); userMoved = false;
     var start = w.pageYOffset || d.documentElement.scrollTop;
-    var y = Math.max(0, t.getBoundingClientRect().top + start - headerOffset());
-    if (reduce) { w.scrollTo({ top: y, behavior: "instant" }); return; }
-    w.scrollTo({ top: y, behavior: "smooth" });
+    var y = wanted(t);
+    if (reduce) w.scrollTo({ top: y, behavior: "instant" });
+    else w.scrollTo({ top: y, behavior: "smooth" });
     /* gdy płynne przewijanie nie ruszy (niektóre przeglądarki i osadzenia), przeskocz od razu */
-    setTimeout(function () {
+    settleT.push(setTimeout(function () {
       var now = w.pageYOffset || d.documentElement.scrollTop;
-      if (Math.abs(now - start) < 2 && Math.abs(y - start) > 2) w.scrollTo({ top: y, behavior: "instant" });
-    }, 450);
+      if (Math.abs(now - start) < 2 && Math.abs(y - start) > 2) w.scrollTo({ top: wanted(t), behavior: "instant" });
+    }, 450));
+    /* korekta: zdjęcia i animacje powyżej mogą zmienić wysokość strony już po przewinięciu */
+    [1100, 1800, 2800].forEach(function (ms) {
+      settleT.push(setTimeout(function () {
+        if (userMoved) return;
+        var want = wanted(t), now = w.pageYOffset || d.documentElement.scrollTop;
+        if (Math.abs(want - now) > 4) w.scrollTo({ top: want, behavior: "instant" });
+      }, ms));
+    });
   }
   L.okna = { open: open, close: close, key: keyOf, scrollTo: scrollToEl };
 
