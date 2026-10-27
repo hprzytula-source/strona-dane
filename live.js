@@ -243,7 +243,7 @@ window.__DRB.team();
   if (L.okna) return;
   var RE = /#(wpis|projekt|strona|lista|osoba|blog)=([A-Za-z0-9_-]+)$/;
   var cache = {}, cur = null, depth = 0, root = null, body = null, panel = null, lastFocus = null, closeT = null;
-  var savedY = 0, restoreT = [], prevRestore = null;
+  var savedY = 0, restoreT = [], prevRestore = null, quietUntil = 0;
   var reduce = w.matchMedia && w.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var ICON_X = "<svg class=\"ph ph-x\" viewBox=\"0 0 256 256\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z\"/></svg>", ICON_COPY = "<svg class=\"ph ph-copy\" viewBox=\"0 0 256 256\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z\"/></svg>", ICON_CHECK = "<svg class=\"ph ph-check\" viewBox=\"0 0 256 256\" fill=\"currentColor\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z\"/></svg>";
 
@@ -333,6 +333,7 @@ window.__DRB.team();
       /* każde okno to wpis w historii: Wstecz wraca z wpisu do listy, a potem zamyka okno */
       try { if (location.hash !== "#" + key) { history.pushState(state, "", "#" + key); depth++; } } catch (e) {}
     }
+    guardStrikingly(); quiet();
     if (!cur) {
       lastFocus = d.activeElement;
       /* pozycja strony pod oknem: po zamknięciu wracamy dokładnie tu (cofanie historii i blokada przewijania potrafią przenieść stronę na górę) */
@@ -351,6 +352,7 @@ window.__DRB.team();
   }
   function close(fromHistory, keepScroll) {
     if (!cur) return;
+    guardStrikingly(); quiet();
     cur = null;
     root.classList.remove("is-open");
     d.documentElement.classList.remove("dr-mx-open");
@@ -430,11 +432,31 @@ window.__DRB.team();
   }, true);
   w.addEventListener("popstate", function () {
     var key = keyOf(location.hash);
+    quiet();
     if (key && key.indexOf("osoba=") !== 0) { if (depth) depth--; if (key !== cur) open(key, true); }
     else if (cur) close(true);
   });
+  /* Strikingly przy każdej zmianie adresu z „#” (także przy cofnięciu historii) przechodzi do sekcji z adresu,
+     a pusty adres oznacza dla niego pierwszą sekcję: strona płynnie przewija się na samą górę. Jego obsługę
+     zdarzenia (jQuery) pomijamy, gdy adres należy do okna albo okno właśnie się otwiera lub zamyka. */
+  function quiet() { quietUntil = Date.now() + 1500; }
+  function guardStrikingly() {
+    var $ = w.jQuery, ev;
+    try { ev = $ && $._data && $._data(w, "events"); } catch (e) { return; }
+    if (!ev || !ev.hashchange) return;
+    ev.hashchange.forEach(function (h) {
+      if (h.__dr || typeof h.handler !== "function") return;
+      var f = h.handler; h.__dr = 1;
+      h.handler = function () {
+        var hash = location.hash;
+        if (keyOf(hash) || ((!hash || hash === "#") && (cur || Date.now() < quietUntil))) return;
+        return f.apply(this, arguments);
+      };
+    });
+  }
   /* adres z oknem otwarty bezpośrednio (np. udostępniony link) */
   function boot() {
+    guardStrikingly();
     var key = keyOf(location.hash);
     /* przekierowanie ze starego bloga zapisuje cel także tu (gdyby Strikingly usunął „#…” z adresu) */
     try { var saved = sessionStorage.getItem("dr-okno"); if (saved) { sessionStorage.removeItem("dr-okno"); if (!key) key = keyOf("#" + saved); } } catch (e) {}
@@ -444,6 +466,7 @@ window.__DRB.team();
     if (t) setTimeout(function () { scrollToEl(t); }, 400);
   }
   if (d.readyState === "loading") d.addEventListener("DOMContentLoaded", boot); else setTimeout(boot, 0);
+  w.addEventListener("load", guardStrikingly);
 })(window, document);
 
 /* ===== Obsługa formularzy (walidacja, stany: wysyłanie / sukces / błąd) =====
