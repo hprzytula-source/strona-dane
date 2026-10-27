@@ -226,6 +226,114 @@
   if (d.readyState === "loading") d.addEventListener("DOMContentLoaded", boot); else setTimeout(boot, 0);
 })(window, document);
 
+/* ===== Obsługa formularzy (walidacja, stany: wysyłanie / sukces / błąd) =====
+   Jeden wspólny mechanizm dla formularzy bloków ([data-dr-form]). Zgłoszenie idzie przez formularz Strikingly
+   na tej samej stronie (sforms.js), a gdy go nie ma, na adres z Ustawień Studio (np. Formspree).
+   Kopia z live.js zastępuje kopię z bloku i przejmuje wysyłkę także w blokach wklejonych wcześniej. */
+(function (w, d) {
+  var LIVE = true;
+  if (w.__DRF && (w.__DRF.live || !LIVE)) return;
+  var ICON_WARN = '<svg class="ph ph-warning-circle" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true" focusable="false"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm-8-80V80a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm20,36a12,12,0,1,1-12-12A12,12,0,0,1,140,172Z"/></svg>';
+  var ICON_INFO = '<svg class="ph ph-info" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true" focusable="false"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z"/></svg>';
+  var ICON_OK = '<svg class="ph ph-check-circle" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true" focusable="false"><path d="M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"/></svg>';
+  /* w edytorze Strikingly i w podglądzie Studio zgłoszenia się nie wysyłają (Strikingly też je tam blokuje) */
+  var editor = /(^|\.)strikingly\.com$/.test(location.hostname);
+  var FIELDS = "input:not([type=hidden]):not([name=_gotcha]),select,textarea";
+
+  function css() {
+    if (d.getElementById("dr-forms-css")) return;
+    var s = d.createElement("style"); s.id = "dr-forms-css";
+    s.textContent = ".dr-form__status.is-info{display:flex;background:#EAF1F8;color:#15345C}";
+    (d.head || d.documentElement).appendChild(s);
+  }
+  function fieldError(input, msg) {
+    var box = input.closest(".dr-field");
+    if (!box) return;
+    var err = box.querySelector(".dr-field__err");
+    box.classList.toggle("is-invalid", !!msg);
+    input.setAttribute("aria-invalid", msg ? "true" : "false");
+    if (err) err.textContent = msg || "";
+  }
+  function check(input) {
+    var v = (input.value || "").trim();
+    if (input.type === "checkbox") { if (input.required && !input.checked) return fieldError(input, "Zaznacz zgodę, aby kontynuować."), false; fieldError(input, ""); return true; }
+    if (input.required && !v) return fieldError(input, "To pole jest wymagane."), false;
+    if (input.type === "email" && v && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) return fieldError(input, "Podaj poprawny adres e-mail."), false;
+    if (input.type === "file" && input.files && input.files[0] && input.files[0].size > 20 * 1024 * 1024) return fieldError(input, "Plik może mieć maksymalnie 20 MB."), false;
+    fieldError(input, ""); return true;
+  }
+  function field(t) { return t && t.closest && t.closest("form[data-dr-form]") && t.matches(FIELDS) ? t : null; }
+
+  function handle(form) {
+    if (form.__drBusy) return;
+    var kind = form.getAttribute("data-dr-form");
+    var mailto = form.getAttribute("data-mailto") || "";
+    var success = form.getAttribute("data-success") || "Dziękujemy!";
+    var endpoint = (form.getAttribute("data-endpoint") || "").trim();
+    var btn = form.querySelector("[type=submit]");
+    if (btn && btn.__drLabel == null) btn.__drLabel = btn.innerHTML;
+    var status = form.querySelector(".dr-form__status");
+    function setStatus(k, html) { if (!status) return; css(); status.className = "dr-form__status is-" + k; status.innerHTML = html; }
+    function busy() { form.__drBusy = true; if (btn) { btn.disabled = true; btn.classList.add("is-loading"); btn.innerHTML = "Wysyłanie…"; } setStatus("idle", ""); }
+    function idle() { form.__drBusy = false; if (btn) { btn.disabled = false; btn.classList.remove("is-loading"); btn.innerHTML = btn.__drLabel; } }
+    function sent() {
+      form.classList.add("is-sent");
+      setStatus("ok", ICON_OK + " " + success);
+      form.reset();
+      form.querySelectorAll(".dr-file__name").forEach(function (n) { n.textContent = n.dataset.empty || ""; });
+    }
+    function failed(text) {
+      setStatus("error", ICON_WARN + " " + (typeof text === "string" ? text : "Nie udało się wysłać.") + (mailto ? ' Spróbuj ponownie lub napisz na <a href="mailto:' + mailto + '" target="_top">' + mailto + "</a>." : " Spróbuj ponownie."));
+    }
+
+    var inputs = Array.prototype.slice.call(form.querySelectorAll(FIELDS));
+    if (!inputs.map(check).every(Boolean)) { var first = form.querySelector("[aria-invalid=true]"); if (first) first.focus(); setStatus("error", ICON_WARN + " Uzupełnij zaznaczone pola."); return; }
+    if (form._gotcha && form._gotcha.value) return;
+
+    if (editor || w.__DRPreview) {
+      setStatus("info", ICON_INFO + (editor ? " To podgląd w edytorze Strikingly. Formularz wyśle zgłoszenie na opublikowanej stronie." : " To podgląd w Studio. Formularz wyśle zgłoszenie na opublikowanej stronie."));
+      return;
+    }
+    /* formularz Strikingly na stronie: zgłoszenie idzie przez niego */
+    var sf = w.__DRL && w.__DRL.sf;
+    var run = sf && sf.submit(kind, form, {});
+    if (run) {
+      busy();
+      run.then(function (r) { if (r.ok) sent(); else if (r.cancelled) setStatus("idle", ""); else failed(); }, failed).then(idle, idle);
+      return;
+    }
+    if (/^https:\/\//.test(endpoint)) {
+      busy();
+      fetch(endpoint, { method: "POST", body: new FormData(form), headers: { Accept: "application/json" } })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r; })
+        .then(sent, failed)
+        .then(idle, idle);
+      return;
+    }
+    if (w.console) console.warn("Fundacja Dobry Rząd: na tej stronie nie ma sekcji z formularzem Strikingly (" + (kind === "contact" ? "Custom Form, formularz kontaktowy" : "Sign Up Form, zapis do newslettera") + "). Dodaj ją w edytorze Strikingly i opublikuj stronę.");
+    failed("Formularz jest chwilowo niedostępny.");
+  }
+
+  /* jedno nasłuchiwanie dla całej strony (faza przechwytywania): wcześniejsze wersje skryptu z bloków nie wysyłają */
+  if (!w.__DRFBound) {
+    w.__DRFBound = 1;
+    w.addEventListener("submit", function (e) {
+      var form = e.target && e.target.closest && e.target.closest("form[data-dr-form]");
+      if (!form) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      w.__DRF.handle(form);
+    }, true);
+    d.addEventListener("focusout", function (e) { var i = field(e.target); if (i && i.value) w.__DRF.check(i); }, true);
+    ["input", "change"].forEach(function (ev) {
+      d.addEventListener(ev, function (e) { var i = field(e.target); if (i && i.closest(".dr-field.is-invalid")) w.__DRF.check(i); }, true);
+    });
+  }
+  w.__DRF = { live: LIVE, handle: handle, check: check };
+  /* zgodność z blokami: newsletter.js i contact.js wywołują __DRForms(form, opcje) */
+  w.__DRForms = function () {};
+})(window, document);
+
 /* ===== Fundacja Dobry Rząd · formularze Strikingly =====
    Zapis do newslettera i formularz kontaktowy idą przez formularze Strikingly: zgłoszenia trafiają do Strikingly
    (lista kontaktów, odpowiedzi formularzy, powiadomienia e-mail, ochrona przed spamem). Sekcje z formularzami
